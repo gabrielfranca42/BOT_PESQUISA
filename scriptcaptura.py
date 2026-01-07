@@ -1,135 +1,110 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
 import requests
 from bs4 import BeautifulSoup
-import time
+import nltk
+from nltk.tokenize import sent_tokenize
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.utils import get_column_letter
 
-# Lista de palavras-chave
-palavras_chave = [
-    "inovação",  "desenvolvimento", "sustentabilidade", 
-    "tecnologia limpa", "transformação digital", "criatividade",
-    "novas soluções", "empreendedorismo", 
-    "economia verde", "edital", "chamada pública", "concurso",
-    "projeto", "financiamento", "subvenção", "apoio financeiro", "incentivo", "bolsa",
-    "programa de fomento", "seleção pública", "proposta", "captação de recursos",
-    "verde", "ambiental", "desenvolvimento sustentável", "economia circular" 
-    , "redução de emissões", "gestão ambiental", "biodiversidade",
-    "tecnologia sustentável", "inovação verde"
-]
-
-class RedeLentaError(Exception):
-    """Erro customizado para quando a rede está lenta ou o carregamento falha"""
-    pass
-
-def verificar_conteudo(link, palavras_chave, timeout=10):
-    """
-    Retorna True se alguma palavra-chave estiver no conteúdo da página.
-    """
+def extrair_texto(url, timeout=10):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(link, headers=headers, timeout=timeout)
+        r = requests.get(url, headers=headers, timeout=timeout)
         r.raise_for_status()
+
         soup = BeautifulSoup(r.text, "html.parser")
+
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+
         texto = " ".join(p.get_text() for p in soup.find_all("p"))
-        return any(palavra.lower() in texto.lower() for palavra in palavras_chave)
-    except:
-        return False
+        return texto.strip()
 
-def buscar_links_duckduckgo(termos, minimo_links=50, arquivo_saida="links_prioridade_duck.txt", tempo_espera=10):
-    termos = [t.lower() for t in termos]
+    except Exception as e:
+        print(f"Erro ao ler {url}: {e}")
+        return ""
 
-    # Configurações do Chrome
-    options = webdriver.ChromeOptions()
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
+def resumir_texto(texto, max_frases=5):
+    frases = sent_tokenize(texto, language="portuguese")
+    return " ".join(frases[:max_frases])
 
-    try:
-        driver = webdriver.Chrome(options=options)
-    except WebDriverException as e:
-        raise RuntimeError(f"Não foi possível iniciar o Chrome: {e}")
+def ajustar_formatacao_excel(arquivo):
+    wb = load_workbook(arquivo)
+    ws = wb.active
 
-    # Tenta acessar DuckDuckGo
-    try:
-        driver.get("https://duckduckgo.com/")
-    except WebDriverException:
-        driver.quit()
-        raise RedeLentaError("Falha ao acessar DuckDuckGo. Possível problema de rede.")
+    # Congelar cabeçalho
+    ws.freeze_panes = "A2"
 
-    time.sleep(2)
+    # Estilo do cabeçalho
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
-    # Faz a busca
-    try:
-        caixa_busca = driver.find_element(By.NAME, "q")
-        caixa_busca.send_keys(" ".join(termos))
-        caixa_busca.send_keys(Keys.RETURN)
-    except:
-        driver.quit()
-        raise RedeLentaError("Não foi possível localizar a barra de pesquisa. Verifique a rede ou o site.")
+    for col in range(1, ws.max_column + 1):
+        cell = ws.cell(row=1, column=col)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    links_final = []
-    pagina = 1
+    # Ajustes de colunas e células
+    for col in range(1, ws.max_column + 1):
+        max_length = 0
+        col_letter = get_column_letter(col)
 
-    while len(links_final) < minimo_links:
-        print(f"\n[DEBUG] Capturando página {pagina}...")
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col)
 
-        try:
-            WebDriverWait(driver, tempo_espera).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a[data-testid='result-title-a']"))
-            )
-        except TimeoutException:
-            driver.quit()
-            raise RedeLentaError(f"Tempo de espera excedido na página {pagina}. Rede lenta ou site não carregou.")
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
 
-        resultados = driver.find_elements(By.CSS_SELECTOR, "a[data-testid='result-title-a']")
-        print(f"[DEBUG] Links encontrados nesta página: {len(resultados)}")
+            # Quebra de linha e alinhamento para o resumo
+            if col_letter == "B" and row > 1:
+                cell.alignment = Alignment(
+                    wrap_text=True,
+                    vertical="top"
+                )
 
-        for r in resultados:
-            href = r.get_attribute("href")
-            if href and href not in links_final:
-                # agora filtramos pelo conteúdo, não pelo URL
-                if verificar_conteudo(href, palavras_chave):
-                    links_final.append(href)
-                    print(f"[DEBUG] Adicionado: {href}")
+        # Larguras personalizadas
+        if col_letter == "A":
+            ws.column_dimensions[col_letter].width = 60
+        elif col_letter == "B":
+            ws.column_dimensions[col_letter].width = 120
+        else:
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 80)
 
-            if len(links_final) >= minimo_links:
-                break
+    wb.save(arquivo)
 
-        print(f"[DEBUG] Total de links coletados até agora: {len(links_final)}")
+def processar_links(
+    arquivo_links="links_filtrados.txt",
+    arquivo_saida="resumos.xlsx"
+):
+    with open(arquivo_links, "r", encoding="utf-8") as f:
+        links = [l.strip() for l in f if l.strip()]
 
-        # Tenta ir para próxima página
-        if len(links_final) < minimo_links:
-            try:
-                btn_mais = driver.find_element(By.CSS_SELECTOR, "a.result--more__btn")
-                btn_mais.click()
-                pagina += 1
-                time.sleep(2)
-            except:
-                print("[DEBUG] Não há mais resultados. Finalizando.")
-                break
+    dados = []
 
-    driver.quit()
+    for i, link in enumerate(links, 1):
+        print(f"\nLendo ({i}/{len(links)}): {link}")
 
-    if not links_final:
-        raise RedeLentaError("Nenhum link coletado com conteúdo relevante.")
+        texto = extrair_texto(link)
 
-    # Salva em arquivo
-    with open(arquivo_saida, "w", encoding="utf-8") as f:
-        for link in links_final[:minimo_links]:
-            f.write(link + "\n")
+        if len(texto) < 300:
+            print("Conteúdo muito curto, pulando...")
+            continue
 
-    return links_final[:minimo_links]
+        resumo = resumir_texto(texto)
+
+        dados.append({
+            "Link": link,
+            "Resumo": resumo
+        })
+
+    df = pd.DataFrame(dados)
+    df.to_excel(arquivo_saida, index=False)
+
+    ajustar_formatacao_excel(arquivo_saida)
+
+    print(f"\n✅ Excel formatado e salvo em {arquivo_saida}")
 
 if __name__ == "__main__":
-    try:
-        links = buscar_links_duckduckgo(palavras_chave, minimo_links=50)
-        print(f"\nTotal de links salvos: {len(links)}")
-        for link in links:
-            print(link)
-    except RedeLentaError as e:
-        print(f"\n❌ ERRO: {e}")
-    except Exception as e:
-        print(f"\n❌ ERRO inesperado: {e}")
+    processar_links()
