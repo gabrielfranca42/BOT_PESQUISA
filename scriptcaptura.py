@@ -39,7 +39,7 @@ def verificar_conteudo(link, palavras_chave, timeout=10):
     except:
         return False
 
-def buscar_links_duckduckgo(termos, minimo_links=50, arquivo_saida="links_prioridade_duck.txt", tempo_espera=10):
+def buscar_links_duckduckgo(termos, minimo_links=50, arquivo_saida="links_filtrados.txt", tempo_espera=10):
     termos = [t.lower() for t in termos]
 
     # Configurações do Chrome
