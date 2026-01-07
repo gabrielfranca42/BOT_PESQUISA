@@ -8,128 +8,104 @@ import requests
 from bs4 import BeautifulSoup
 import time
 
-# Lista de palavras-chave
-palavras_chave = [
-    "inovação",  "desenvolvimento", "sustentabilidade", 
-    "tecnologia limpa", "transformação digital", "criatividade",
-    "novas soluções", "empreendedorismo", 
-    "economia verde", "edital", "chamada pública", "concurso",
-    "projeto", "financiamento", "subvenção", "apoio financeiro", "incentivo", "bolsa",
-    "programa de fomento", "seleção pública", "proposta", "captação de recursos",
-    "verde", "ambiental", "desenvolvimento sustentável", "economia circular" 
-    , "redução de emissões", "gestão ambiental", "biodiversidade",
-    "tecnologia sustentável", "inovação verde"
+# --- NOVAS PALAVRAS-CHAVE INTEGRADAS ---
+palavras_chave_br = [
+    "subvenção econômica", "recursos obrigatórios P&D", "ICT empresa portuária",
+    "encomenda tecnológica", "Rota 2030 logística", "Programa Mover",
+    "Finep Mais Inovação Brasil", "Embrapii portos", "BNDES FUNTEC sustentabilidade",
+    "ANP descarbonização", "edital portuário", "chamada pública infraestrutura"
 ]
 
+palavras_chave_int = [
+    "TRL Technology Readiness Level port", "Waterborne Transport innovation",
+    "ZEWT Zero-Emission Waterborne Transport", "Shore-to-Ship Power funding",
+    "Just Transition Fund ports", "Horizon Europe Cluster 5", "BlueInvest startup",
+    "IMO technical cooperation greenhouse gas", "World Bank port infrastructure grant"
+]
+
+# Unificando as listas para o filtro de conteúdo
+todas_palavras = palavras_chave_br + palavras_chave_int
+
 class RedeLentaError(Exception):
-    """Erro customizado para quando a rede está lenta ou o carregamento falha"""
     pass
 
-def verificar_conteudo(link, palavras_chave, timeout=10):
-    """
-    Retorna True se alguma palavra-chave estiver no conteúdo da página.
-    """
+def verificar_conteudo(link, termos, timeout=10):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(link, headers=headers, timeout=timeout)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
-        texto = " ".join(p.get_text() for p in soup.find_all("p"))
-        return any(palavra.lower() in texto.lower() for palavra in palavras_chave)
+        texto = " ".join(p.get_text() for p in soup.find_all(["p", "h1", "h2"])).lower()
+        # Verifica se ao menos um termo relevante aparece na página
+        return any(termo.lower() in texto for termo in termos)
     except:
         return False
 
-def buscar_links_duckduckgo(termos, minimo_links=50, arquivo_saida="links_filtrados.txt", tempo_espera=10):
-    termos = [t.lower() for t in termos]
-
-    # Configurações do Chrome
+def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_filtrados.txt"):
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
-
-    try:
-        driver = webdriver.Chrome(options=options)
-    except WebDriverException as e:
-        raise RuntimeError(f"Não foi possível iniciar o Chrome: {e}")
-
-    # Tenta acessar DuckDuckGo
-    try:
-        driver.get("https://duckduckgo.com/")
-    except WebDriverException:
-        driver.quit()
-        raise RedeLentaError("Falha ao acessar DuckDuckGo. Possível problema de rede.")
-
-    time.sleep(2)
-
-    # Faz a busca
-    try:
-        caixa_busca = driver.find_element(By.NAME, "q")
-        caixa_busca.send_keys(" ".join(termos))
-        caixa_busca.send_keys(Keys.RETURN)
-    except:
-        driver.quit()
-        raise RedeLentaError("Não foi possível localizar a barra de pesquisa. Verifique a rede ou o site.")
-
+    
+    driver = webdriver.Chrome(options=options)
     links_final = []
-    pagina = 1
 
-    while len(links_final) < minimo_links:
-        print(f"\n[DEBUG] Capturando página {pagina}...")
+    # Realizamos buscas por blocos para aumentar a precisão
+    # Busca 1: Termos Nacionais | Busca 2: Termos Internacionais
+    buscas = [
+        " ".join(palavras_chave_br[:5]) + " edital 2024 2025",
+        " ".join(palavras_chave_int[:4]) + " call for proposals"
+    ]
 
+    for query in buscas:
         try:
-            WebDriverWait(driver, tempo_espera).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a[data-testid='result-title-a']"))
-            )
-        except TimeoutException:
-            driver.quit()
-            raise RedeLentaError(f"Tempo de espera excedido na página {pagina}. Rede lenta ou site não carregou.")
+            driver.get("https://duckduckgo.com/")
+            time.sleep(2)
+            caixa_busca = driver.find_element(By.NAME, "q")
+            caixa_busca.send_keys(query)
+            caixa_busca.send_keys(Keys.RETURN)
+            
+            # Scroll e captura
+            for _ in range(3): # Tenta carregar mais resultados 3 vezes
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a[data-testid='result-title-a']"))
+                )
+                resultados = driver.find_elements(By.CSS_SELECTOR, "a[data-testid='result-title-a']")
+                
+                for r in resultados:
+                    href = r.get_attribute("href")
+                    if href and href not in links_final:
+                        print(f"[ANALISANDO] {href}")
+                        if verificar_conteudo(href, todas_palavras):
+                            links_final.append(href)
+                            print(f"  -- ✅ Relevante!")
+                    
+                    if len(links_final) >= minimo_links: break
+                
+                if len(links_final) >= minimo_links: break
+                
+                # Clica em "Mais Resultados" se existir
+                try:
+                    btn_mais = driver.find_element(By.CSS_SELECTOR, "a.result--more__btn")
+                    btn_mais.click()
+                    time.sleep(2)
+                except:
+                    break
 
-        resultados = driver.find_elements(By.CSS_SELECTOR, "a[data-testid='result-title-a']")
-        print(f"[DEBUG] Links encontrados nesta página: {len(resultados)}")
-
-        for r in resultados:
-            href = r.get_attribute("href")
-            if href and href not in links_final:
-                # agora filtramos pelo conteúdo, não pelo URL
-                if verificar_conteudo(href, palavras_chave):
-                    links_final.append(href)
-                    print(f"[DEBUG] Adicionado: {href}")
-
-            if len(links_final) >= minimo_links:
-                break
-
-        print(f"[DEBUG] Total de links coletados até agora: {len(links_final)}")
-
-        # Tenta ir para próxima página
-        if len(links_final) < minimo_links:
-            try:
-                btn_mais = driver.find_element(By.CSS_SELECTOR, "a.result--more__btn")
-                btn_mais.click()
-                pagina += 1
-                time.sleep(2)
-            except:
-                print("[DEBUG] Não há mais resultados. Finalizando.")
-                break
+        except Exception as e:
+            print(f"Erro durante a busca: {e}")
 
     driver.quit()
 
-    if not links_final:
-        raise RedeLentaError("Nenhum link coletado com conteúdo relevante.")
-
-    # Salva em arquivo
     with open(arquivo_saida, "w", encoding="utf-8") as f:
-        for link in links_final[:minimo_links]:
+        for link in links_final:
             f.write(link + "\n")
-
-    return links_final[:minimo_links]
+    
+    return links_final
 
 if __name__ == "__main__":
+    print("Iniciando busca avançada (Brasil & Internacional)...")
     try:
-        links = buscar_links_duckduckgo(palavras_chave, minimo_links=50)
-        print(f"\nTotal de links salvos: {len(links)}")
-        for link in links:
-            print(link)
-    except RedeLentaError as e:
-        print(f"\n❌ ERRO: {e}")
+        links = buscar_links_duckduckgo(todas_palavras, minimo_links=30)
+        print(f"\n✅ Busca concluída! {len(links)} links salvos em 'links_filtrados.txt'")
     except Exception as e:
-        print(f"\n❌ ERRO inesperado: {e}")
+        print(f"❌ Erro: {e}")
