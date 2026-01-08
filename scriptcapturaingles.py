@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 import re
 
-# --- NOVAS PALAVRAS-CHAVE INTEGRADAS ---
+# --- PALAVRAS-CHAVE ---
 palavras_chave_br = [
     "subvenção econômica", "recursos obrigatórios P&D", "ICT empresa portuária",
     "encomenda tecnológica", "Rota 2030 logística", "Programa Mover",
@@ -28,19 +28,27 @@ palavras_chave_int = [
     "IMO technical cooperation greenhouse gas", "World Bank port infrastructure grant"
 ]
 
-# Unificando as listas para o filtro de conteúdo
-todas_palavras = palavras_chave_br + palavras_chave_int
+# >>> MODIFICAÇÃO INGLÊS: somente palavras internacionais
+todas_palavras = palavras_chave_int
+
+
+# >>> MODIFICAÇÃO INGLÊS: termos obrigatórios em inglês
+termos_ingles_obrigatorios = [
+    "call for proposals", "funding", "grant", "programme",
+    "innovation", "horizon europe", "application", "deadline"
+]
+
 
 class RedeLentaError(Exception):
     pass
 
 
-# >>> MODIFICAÇÃO: definição do RANGE TEMPORAL solicitado
+# >>> RANGE TEMPORAL
 DATA_INICIO = datetime(2025, 6, 1)
 DATA_FIM    = datetime(2026, 1, 8)
 
 
-# >>> MODIFICAÇÃO: função NOVA para extrair datas do texto da página
+# >>> FUNÇÃO DE EXTRAÇÃO DE DATA (inalterada)
 def extrair_data(texto):
     padroes = [
         r'(\d{2}/\d{2}/\d{4})',
@@ -75,7 +83,20 @@ def extrair_data(texto):
     return None
 
 
-# >>> MODIFICAÇÃO: função original MANTIDA, mas com filtro temporal integrado
+# >>> MODIFICAÇÃO INGLÊS: detecção real de idioma
+def pagina_em_ingles(soup):
+    html = soup.find("html")
+    if html and html.get("lang"):
+        return html.get("lang").lower().startswith("en")
+
+    meta_lang = soup.find("meta", attrs={"http-equiv": "content-language"})
+    if meta_lang and "en" in meta_lang.get("content", "").lower():
+        return True
+
+    return False
+
+
+# >>> FUNÇÃO PRINCIPAL COM FILTROS DE INGLÊS + DATA
 def verificar_conteudo(link, termos, timeout=10):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -84,30 +105,35 @@ def verificar_conteudo(link, termos, timeout=10):
 
         soup = BeautifulSoup(r.text, "html.parser")
 
+        # >>> MODIFICAÇÃO INGLÊS: rejeita páginas não inglesas
+        if not pagina_em_ingles(soup):
+            return False
+
         texto = " ".join(
             tag.get_text(" ", strip=True)
             for tag in soup.find_all(["p", "h1", "h2", "span", "time"])
         ).lower()
 
-        # >>> MODIFICAÇÃO: extração da data da página
+        # >>> DATA
         data_publicacao = extrair_data(texto)
-
-        # >>> MODIFICAÇÃO: descarta páginas sem data identificável
         if not data_publicacao:
             return False
 
-        # >>> MODIFICAÇÃO: filtro pelo intervalo 01/06/2025 a 08/01/2026
         if not (DATA_INICIO <= data_publicacao <= DATA_FIM):
             return False
 
-        # Lógica original de palavras-chave (inalterada)
+        # >>> MODIFICAÇÃO INGLÊS: exige termos técnicos em inglês
+        if not any(t in texto for t in termos_ingles_obrigatorios):
+            return False
+
+        # >>> Palavras-chave internacionais
         return any(termo.lower() in texto for termo in termos)
 
     except:
         return False
 
 
-def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_filtrados.txt"):
+def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_filtrados_ingles.txt"):
     options = webdriver.ChromeOptions()
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -115,9 +141,11 @@ def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_
     driver = webdriver.Chrome(options=options)
     links_final = []
 
+    # >>> MODIFICAÇÃO INGLÊS: buscas focadas internacionalmente
     buscas = [
-        " ".join(palavras_chave_br[:5]) + " edital 2024 2025",
-        " ".join(palavras_chave_int[:4]) + " call for proposals"
+        " ".join(palavras_chave_int[:4]) + " call for proposals funding grant",
+        "Horizon Europe port innovation call funding",
+        "World Bank port infrastructure grant call"
     ]
 
     for query in buscas:
@@ -147,7 +175,7 @@ def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_
 
                         if verificar_conteudo(href, todas_palavras):
                             links_final.append(href)
-                            print("  -- ✅ Relevante e dentro do período!")
+                            print("  -- ✅ English | Relevant | In period")
 
                     if len(links_final) >= minimo_links:
                         break
@@ -156,10 +184,7 @@ def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_
                     break
 
                 try:
-                    btn_mais = driver.find_element(
-                        By.CSS_SELECTOR, "a.result--more__btn"
-                    )
-                    btn_mais.click()
+                    driver.find_element(By.CSS_SELECTOR, "a.result--more__btn").click()
                     time.sleep(2)
                 except:
                     break
@@ -177,9 +202,9 @@ def buscar_links_duckduckgo(termos_busca, minimo_links=50, arquivo_saida="links_
 
 
 if __name__ == "__main__":
-    print("Iniciando busca avançada (Brasil & Internacional)...")
+    print("🔍 Iniciando busca EXCLUSIVA em inglês...")
     try:
         links = buscar_links_duckduckgo(todas_palavras, minimo_links=30)
-        print(f"\n✅ Busca concluída! {len(links)} links salvos em 'links_filtrados.txt'")
+        print(f"\n✅ Busca concluída! {len(links)} links salvos em 'links_filtrados_ingles.txt'")
     except Exception as e:
         print(f"❌ Erro: {e}")
