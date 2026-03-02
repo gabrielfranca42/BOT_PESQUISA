@@ -104,7 +104,7 @@ def processar_links(
 
     ajustar_formatacao_excel(arquivo_saida)
 
-    print(f"\n✅ Excel formatado e salvo em {arquivo_saida}")
+    print(f"\n Excel formatado e salvo em {arquivo_saida}")
 
 if __name__ == "__main__":
     processar_links()
