@@ -4,32 +4,33 @@ from datetime import datetime
 from urllib.parse import urljoin
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from bs4 import BeautifulSoup
 
 # --- CONFIGURACOES ---
-ARQUIVO_SAIDA = "editais_encontrados.txt"
+ARQUIVO_SAIDA = "editais_tecnicos_puros.txt"
 ARQUIVO_HISTORICO = "historico_links.log"
 
-# Credenciais
-LINKEDIN_USER = ""
-LINKEDIN_PASS = ""
-
-FONTES_SEMENTE = [
-    "http://www.finep.gov.br/chamadas-publicas/chamadas-publicas",
-    "https://www.bndes.gov.br/wps/portal/site/home/onde-atuamos/inovacao/editais",
-    "https://www.gov.br/mdic/pt-br/assuntos/inovacao/editais-e-chamadas-publicas",
-    "https://prosas.com.br/editais",
-    "https://captamos.org.br/editais/"
+# 1. BANIMENTO DE URL (Impede links institucionais e menus)
+URL_LIXO = [
+    "faleconosco", "perguntas-frequentes", "mapa-do-site", "webmail", "acessibilidade", 
+    "institucional", "denuncia", "ouvidoria", "a-facepe", "/fomento/", "quem-somos", 
+    "missao", "organograma", "legislacao", "acervos", "javascript:;", "#", "visualizador"
 ]
+
+# 2. BANIMENTO DE TERMOS NO TITULO (Limpa menus e noticias)
+TEMA_LIXO = [
+    "pnab", "música", "audiovisual", "cinema", "cultura", "museu", "teatro", 
+    "missão", "valores", "quem somos", "histórico", "calendário", "documentos",
+    "dúvidas", "valores vigentes", "organograma", "plano estratégico"
+]
+
+# 3. TEMAS OBRIGATORIOS (Foco Industrial e ESG)
+TEMAS_ALVO = ["edital", "chamada", "chamamento", "seleção", "concurso", "fomento"]
 
 def configurar_driver():
     options = Options()
-    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    # Removido o headless para garantir que o JS da Finep execute corretamente
     return webdriver.Chrome(options=options)
 
 def carregar_historico():
@@ -38,92 +39,98 @@ def carregar_historico():
             return set(line.strip() for line in f)
     return set()
 
-def registrar_achado(titulo, url):
-    data_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entrada = f"DATA: {data_timestamp} | TITULO: {titulo} | URL: {url}\n"
+def validar_real(titulo, url):
+    t_lower = titulo.lower()
+    u_lower = url.lower()
+    
+    # Critério 1: Bloqueia links quebrados ou âncoras
+    if u_lower.startswith("javascript") or u_lower.startswith("#") or len(u_lower) < 10:
+        return False
+
+    # Critério 2: Se estiver na blacklist de URL institucional, descarta
+    if any(lixo in u_lower for lixo in URL_LIXO):
+        return False
+    
+    # Critério 3: Se o título for muito longo (provavelmente um menu inteiro capturado)
+    if len(t_lower) > 200 or t_lower.count(" ") > 25:
+        return False
+
+    # Critério 4: Se for audiovisual/cultura ou institucional, descarta
+    if any(lixo in t_lower for lixo in TEMA_LIXO):
+        return False
+        
+    # Critério 5: Tem que parecer um EDITAL ou CHAMADA real
+    if any(alvo in t_lower for alvo in TEMAS_ALVO):
+        # Garante que tenha o tema técnico desejado
+        temas_tecnicos = ["indústria", "esg", "digital", "energia", "transição", "inovação", "hidrogênio"]
+        if any(tema in t_lower for tema in temas_tecnicos):
+            return True
+            
+    # Exceção para links diretos da FINEP que já sabemos que são editais
+    if "chamadapublica" in u_lower and not any(l in t_lower for l in TEMA_LIXO):
+        return True
+
+    return False
+
+def registrar_limpo(titulo, url, fonte):
+    data = datetime.now().strftime("%d/%m/%Y")
+    titulo_limpo = " ".join(titulo.split()).upper()
+    entrada = f"[{data}] {fonte} | {titulo_limpo} | {url}\n"
     with open(ARQUIVO_SAIDA, "a", encoding="utf-8") as f:
         f.write(entrada)
     with open(ARQUIVO_HISTORICO, "a", encoding="utf-8") as h:
         h.write(f"{url}\n")
 
-def login_linkedin(driver):
-    print("Realizando login no LinkedIn...")
-    driver.get("https://www.linkedin.com/login")
-    try:
-        wait = WebDriverWait(driver, 15)
-        user_input = wait.until(EC.presence_of_element_located((By.ID, "username")))
-        user_input.send_keys(LINKEDIN_USER)
-        driver.find_element(By.ID, "password").send_keys(LINKEDIN_PASS)
-        driver.find_element(By.XPATH, "//button[@type='submit']").click()
-        time.sleep(5)
-    except Exception as e:
-        print(f"Erro no login LinkedIn: {e}")
-
-def processar_conteudo(driver, historico, base_url):
-    # Forçar o Selenium a rolar a página para baixo para ativar carregamentos preguiçosos (Lazy Load)
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-    time.sleep(2)
+def minerar(driver, historico, url_alvo, nome_fonte):
+    print(f"Varrendo: {nome_fonte}...")
+    driver.get(url_alvo)
+    time.sleep(7)
     
     soup = BeautifulSoup(driver.page_source, "html.parser")
-    contador = 0
+    achados = 0
     
-    # Lista de palavras ampliada para nao perder nada da Finep
-    palavras_chave = ["esg", "economia popular", "solidaria", "fomento", "edital", "chamada publica", "abertas", "seleção"]
-    
-    # Procurar em links e também em células de tabela (onde a Finep coloca os nomes)
+    # Busca por links, mas filtra o texto para não pegar o menu inteiro
     for link in soup.find_all('a', href=True):
-        raw_url = link['href']
-        url = urljoin(base_url, raw_url)
+        url = urljoin(url_alvo, link['href'])
         
-        # Pega o texto do link ou o texto do "pai" (caso o link seja apenas um ícone ao lado do título)
-        texto = link.get_text().lower().strip()
-        if not texto:
-            texto = link.parent.get_text().lower().strip()
+        # Tenta pegar apenas o texto do link, se for vazio, tenta o pai imediato
+        titulo = link.get_text(" ", strip=True)
+        if not titulo or len(titulo) < 5:
+            titulo = link.parent.get_text(" ", strip=True)
         
-        if any(p in texto for p in palavras_chave):
-            if url not in historico and "javascript" not in url and ".pdf" not in url:
-                titulo = link.get_text(strip=True) or link.parent.get_text(strip=True)
-                # Limpeza básica de títulos muito longos
-                titulo = " ".join(titulo.split()[:15])
-                
-                registrar_achado(titulo, url)
-                historico.add(url)
-                contador += 1
-    return contador
+        if url not in historico and validar_real(titulo, url):
+            registrar_limpo(titulo[:180], url, nome_fonte)
+            historico.add(url)
+            achados += 1
+            
+    return achados
 
 def main():
-    print("Iniciando mineracao...")
     driver = configurar_driver()
     historico = carregar_historico()
-    total_novos = 0
-
-    # 1. LinkedIn
-    login_linkedin(driver)
-
-    # 2. Fontes Oficiais com Espera Explícita
-    for site in FONTES_SEMENTE:
-        try:
-            print(f"Acessando: {site}")
-            driver.get(site)
-            
-            # Se for Finep, espera especificamente pela tabela de editais
-            if "finep" in site:
-                WebDriverWait(driver, 20).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "table"))
-                )
-            else:
-                time.sleep(7)
-                
-            total_novos += processar_conteudo(driver, historico, site)
-        except Exception as e:
-            print(f"Erro em {site}: {e}")
-
-    # 3. Google e LinkedIn Search
-    print("Buscando no Google e LinkedIn...")
-    # ... (mesma lógica de busca anterior)
     
+    # Links diretos para as áreas de EDITAIS (evitando homepages institucionais)
+    fontes = {
+        "FINEP": "http://www.finep.gov.br/chamadas-publicas",
+        "FACEPE": "http://www.facepe.br/editais/abertos/",
+        "BNDES_INOVACAO": "https://www.bndes.gov.br/wps/portal/site/home/onde-atuamos/inovacao/",
+        "SENAI": "https://plataformadeinovacao.senai.br/editais/abertos"
+    }
+
+    total = 0
+    for nome, url in fontes.items():
+        try:
+            total += minerar(driver, historico, url, nome)
+        except: pass
+
+    # Google focado apenas em resultados de 2026 com filtro de negação de lixo
+    q_google = 'site:gov.br "edital" "2026" (industria OR esg OR energia) -institucional -missao -quem-somos'
+    driver.get(f"https://www.google.com/search?q={q_google}")
+    time.sleep(5)
+    total += minerar(driver, historico, "https://google.com", "GOOGLE")
+
     driver.quit()
-    print(f"Finalizado. Novos registrados: {total_novos}")
+    print(f"\nBusca finalizada. {total} editais técnicos reais salvos.")
 
 if __name__ == "__main__":
     main()
